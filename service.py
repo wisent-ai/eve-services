@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Eve's Utility Services v2.0 - Practical developer utility toolkit.
+Eve's Utility Services v3.0 - Practical developer utility toolkit.
 
 Endpoints:
   POST /markdown          - Markdown to HTML conversion
@@ -15,6 +15,10 @@ Endpoints:
   POST /jwt_decode        - JWT token decoding (header, payload, expiry check)
   POST /diff              - Unified diff generation with similarity stats
   POST /template_render   - Mustache/Jinja-like template rendering with filters
+  POST /regex_test        - Regex pattern testing with match details
+  POST /slug              - URL-friendly slug generation
+  POST /csv_json          - CSV to JSON conversion
+  POST /ip_info           - IP address analysis and classification
   GET  /health            - Health check
   GET  /catalog           - Service catalog with pricing
 
@@ -52,7 +56,7 @@ import threading
 PORT = int(os.environ.get("EVE_SERVICE_PORT", 8081))
 COORDINATOR_URL = os.environ.get("COORDINATOR_URL", "https://singularity.wisent.ai")
 INSTANCE_ID = os.environ.get("AGENT_INSTANCE_ID", "agent_1770509569_5622f0")
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 
 PRICES = {
     "markdown": 0.02,
@@ -67,6 +71,10 @@ PRICES = {
     "jwt_decode": 0.03,
     "diff": 0.05,
     "template_render": 0.03,
+    "regex_test": 0.03,
+    "slug": 0.01,
+    "csv_json": 0.03,
+    "ip_info": 0.02,
 }
 
 stats = {
@@ -1281,6 +1289,242 @@ def render_template(template: str, variables: dict) -> dict:
     }
 
 
+# ─── Service: Regex Tester ────────────────────────────────────────────────────
+
+def test_regex(pattern: str, test_string: str, flags_str: str = "") -> dict:
+    """Test a regex pattern against a string and return all matches."""
+    flag_map = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
+    flags = 0
+    for f in flags_str:
+        if f in flag_map:
+            flags |= flag_map[f]
+
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as e:
+        return {"valid": False, "error": str(e), "pattern": pattern}
+
+    matches = []
+    for m in compiled.finditer(test_string):
+        match_info = {
+            "match": m.group(),
+            "start": m.start(),
+            "end": m.end(),
+            "groups": list(m.groups()),
+        }
+        if m.groupdict():
+            match_info["named_groups"] = m.groupdict()
+        matches.append(match_info)
+
+    return {
+        "valid": True,
+        "pattern": pattern,
+        "flags": flags_str,
+        "test_string_length": len(test_string),
+        "match_count": len(matches),
+        "matches": matches,
+        "full_match": bool(compiled.fullmatch(test_string)),
+    }
+
+
+# ─── Service: Slug Generator ────────────────────────────────────────────────
+
+def generate_slug(text: str, separator: str = "-", max_length: int = 80) -> dict:
+    """Generate a URL-friendly slug from text."""
+    # Transliterate common special characters
+    replacements = {
+        'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'ß': 'ss', 'ñ': 'n',
+        'à': 'a', 'á': 'a', 'â': 'a', 'ã': 'a', 'å': 'a',
+        'è': 'e', 'é': 'e', 'ê': 'e', 'ë': 'e',
+        'ì': 'i', 'í': 'i', 'î': 'i', 'ï': 'i',
+        'ò': 'o', 'ó': 'o', 'ô': 'o', 'õ': 'o',
+        'ù': 'u', 'ú': 'u', 'û': 'u',
+        'ç': 'c', 'ð': 'd', 'ý': 'y', 'þ': 'th',
+    }
+    slug = text.lower()
+    for orig, repl in replacements.items():
+        slug = slug.replace(orig, repl)
+
+    # Remove non-alphanumeric chars (except separator)
+    slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+    slug = re.sub(r'[\s-]+', separator, slug).strip(separator)
+
+    # Truncate at max_length on word boundary
+    if len(slug) > max_length:
+        slug = slug[:max_length].rsplit(separator, 1)[0]
+
+    return {
+        "slug": slug,
+        "original": text,
+        "length": len(slug),
+        "separator": separator,
+    }
+
+
+# ─── Service: CSV to JSON ───────────────────────────────────────────────────
+
+def csv_to_json(csv_text: str, delimiter: str = ",", has_header: bool = True) -> dict:
+    """Convert CSV text to JSON array."""
+    lines = csv_text.strip().split('\n')
+    if not lines:
+        return {"error": "Empty CSV input", "rows": [], "row_count": 0}
+
+    # Parse CSV manually (no csv module needed)
+    def parse_csv_line(line: str, delim: str) -> list:
+        """Parse a single CSV line handling quoted fields."""
+        fields = []
+        current = []
+        in_quotes = False
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == '"':
+                if in_quotes and i + 1 < len(line) and line[i + 1] == '"':
+                    current.append('"')
+                    i += 2
+                    continue
+                in_quotes = not in_quotes
+            elif ch == delim and not in_quotes:
+                fields.append(''.join(current).strip())
+                current = []
+            else:
+                current.append(ch)
+            i += 1
+        fields.append(''.join(current).strip())
+        return fields
+
+    parsed_lines = [parse_csv_line(line, delimiter) for line in lines]
+
+    if has_header and len(parsed_lines) > 1:
+        headers = parsed_lines[0]
+        rows = []
+        for row in parsed_lines[1:]:
+            obj = {}
+            for i, header in enumerate(headers):
+                val = row[i] if i < len(row) else ""
+                # Try to convert to number
+                try:
+                    val = int(val)
+                except ValueError:
+                    try:
+                        val = float(val)
+                    except ValueError:
+                        pass
+                obj[header] = val
+            rows.append(obj)
+    else:
+        headers = None
+        rows = parsed_lines
+
+    return {
+        "rows": rows,
+        "row_count": len(rows),
+        "columns": headers if headers else len(parsed_lines[0]) if parsed_lines else 0,
+        "delimiter": delimiter,
+    }
+
+
+# ─── Service: IP Info ────────────────────────────────────────────────────────
+
+def analyze_ip(ip: str) -> dict:
+    """Analyze an IP address - classify, validate, and provide info."""
+    import struct
+
+    result = {
+        "ip": ip,
+        "valid": False,
+        "version": None,
+        "type": None,
+        "class": None,
+        "binary": None,
+    }
+
+    # IPv4 validation
+    ipv4_match = re.match(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$', ip)
+    if ipv4_match:
+        octets = [int(g) for g in ipv4_match.groups()]
+        if all(0 <= o <= 255 for o in octets):
+            result["valid"] = True
+            result["version"] = 4
+            result["octets"] = octets
+            result["binary"] = '.'.join(f'{o:08b}' for o in octets)
+            result["decimal"] = (octets[0] << 24) + (octets[1] << 16) + (octets[2] << 8) + octets[3]
+            result["hex"] = '.'.join(f'{o:02x}' for o in octets)
+
+            # Classify
+            first = octets[0]
+            if first == 0:
+                result["class"] = "reserved"
+                result["type"] = "This network"
+            elif first == 10:
+                result["class"] = "A"
+                result["type"] = "Private (RFC 1918)"
+            elif first == 127:
+                result["class"] = "A"
+                result["type"] = "Loopback"
+            elif first >= 1 and first <= 126:
+                result["class"] = "A"
+                if first == 100 and 64 <= octets[1] <= 127:
+                    result["type"] = "Shared Address Space (RFC 6598)"
+                else:
+                    result["type"] = "Public"
+            elif first >= 128 and first <= 191:
+                result["class"] = "B"
+                if first == 172 and 16 <= octets[1] <= 31:
+                    result["type"] = "Private (RFC 1918)"
+                elif first == 169 and octets[1] == 254:
+                    result["type"] = "Link-local (APIPA)"
+                else:
+                    result["type"] = "Public"
+            elif first >= 192 and first <= 223:
+                result["class"] = "C"
+                if first == 192 and octets[1] == 168:
+                    result["type"] = "Private (RFC 1918)"
+                else:
+                    result["type"] = "Public"
+            elif first >= 224 and first <= 239:
+                result["class"] = "D"
+                result["type"] = "Multicast"
+            elif first >= 240:
+                result["class"] = "E"
+                if ip == "255.255.255.255":
+                    result["type"] = "Broadcast"
+                else:
+                    result["type"] = "Reserved"
+
+            result["is_private"] = "Private" in (result["type"] or "")
+            result["is_loopback"] = first == 127
+            result["is_multicast"] = 224 <= first <= 239
+
+    # Basic IPv6 validation
+    elif ':' in ip:
+        result["version"] = 6
+        # Simple IPv6 validation
+        parts = ip.split(':')
+        try:
+            # Handle :: expansion
+            if '::' in ip:
+                result["valid"] = True
+                result["type"] = "IPv6"
+                if ip == '::1':
+                    result["type"] = "IPv6 Loopback"
+                    result["is_loopback"] = True
+                elif ip.startswith('fe80:'):
+                    result["type"] = "IPv6 Link-local"
+                elif ip.startswith('fc') or ip.startswith('fd'):
+                    result["type"] = "IPv6 Unique Local"
+                    result["is_private"] = True
+            elif len(parts) == 8:
+                for p in parts:
+                    int(p, 16)  # validate hex
+                result["valid"] = True
+                result["type"] = "IPv6 Global Unicast"
+        except ValueError:
+            pass
+
+    return result
+
+
 # ─── HTTP Handler ─────────────────────────────────────────────────────────────
 
 class EveServiceHandler(BaseHTTPRequestHandler):
@@ -1452,6 +1696,38 @@ class EveServiceHandler(BaseHTTPRequestHandler):
                 return {"error": "Missing 'template' field"}
             variables = data.get("variables", {})
             return render_template(template, variables)
+
+        elif service == "regex_test":
+            pattern = data.get("pattern", "")
+            test_string = data.get("text", data.get("test_string", ""))
+            if not pattern:
+                return {"error": "Missing 'pattern' field"}
+            if not test_string:
+                return {"error": "Missing 'text' field"}
+            flags = data.get("flags", "")
+            return test_regex(pattern, test_string, flags)
+
+        elif service == "slug":
+            text = data.get("text", "")
+            if not text:
+                return {"error": "Missing 'text' field"}
+            separator = data.get("separator", "-")
+            max_length = data.get("max_length", 80)
+            return generate_slug(text, separator, max_length)
+
+        elif service == "csv_json":
+            csv_text = data.get("csv", data.get("text", ""))
+            if not csv_text:
+                return {"error": "Missing 'csv' field"}
+            delimiter = data.get("delimiter", ",")
+            has_header = data.get("has_header", True)
+            return csv_to_json(csv_text, delimiter, has_header)
+
+        elif service == "ip_info":
+            ip = data.get("ip", "")
+            if not ip:
+                return {"error": "Missing 'ip' field"}
+            return analyze_ip(ip)
 
         return {"error": f"Service {service} not implemented"}
 

@@ -22,6 +22,10 @@ from service import (
     decode_jwt, _base64url_decode,
     generate_diff,
     render_template, _apply_filter, _resolve_variable,
+    test_regex,
+    generate_slug,
+    csv_to_json,
+    analyze_ip,
     VERSION, PRICES,
 )
 
@@ -861,30 +865,202 @@ class TestTemplateEngine(unittest.TestCase):
         self.assertIn("No footer", rendered)
 
 
+class TestRegexTester(unittest.TestCase):
+    """Test regex testing service."""
+
+    def test_basic_match(self):
+        result = test_regex(r'\d+', 'abc 123 def 456')
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["match_count"], 2)
+        self.assertEqual(result["matches"][0]["match"], "123")
+        self.assertEqual(result["matches"][1]["match"], "456")
+
+    def test_no_match(self):
+        result = test_regex(r'\d+', 'no numbers here')
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["match_count"], 0)
+
+    def test_groups(self):
+        result = test_regex(r'(\w+)@(\w+)', 'user@host')
+        self.assertEqual(result["match_count"], 1)
+        self.assertEqual(result["matches"][0]["groups"], ["user", "host"])
+
+    def test_named_groups(self):
+        result = test_regex(r'(?P<name>\w+)@(?P<domain>\w+)', 'user@host')
+        self.assertEqual(result["matches"][0]["named_groups"]["name"], "user")
+
+    def test_invalid_pattern(self):
+        result = test_regex(r'[invalid', 'test')
+        self.assertFalse(result["valid"])
+        self.assertIn("error", result)
+
+    def test_case_insensitive_flag(self):
+        result = test_regex(r'hello', 'HELLO world', 'i')
+        self.assertEqual(result["match_count"], 1)
+
+    def test_full_match(self):
+        result = test_regex(r'\d+', '123')
+        self.assertTrue(result["full_match"])
+        result2 = test_regex(r'\d+', '123 abc')
+        self.assertFalse(result2["full_match"])
+
+
+class TestSlugGenerator(unittest.TestCase):
+    """Test slug generation service."""
+
+    def test_basic_slug(self):
+        result = generate_slug("Hello World")
+        self.assertEqual(result["slug"], "hello-world")
+
+    def test_special_chars(self):
+        result = generate_slug("Hello, World! #2026")
+        self.assertEqual(result["slug"], "hello-world-2026")
+
+    def test_custom_separator(self):
+        result = generate_slug("Hello World", separator="_")
+        self.assertEqual(result["slug"], "hello_world")
+
+    def test_max_length(self):
+        result = generate_slug("This is a very long title that should be truncated", max_length=20)
+        self.assertLessEqual(len(result["slug"]), 20)
+
+    def test_unicode_transliteration(self):
+        result = generate_slug("Über cool café")
+        # ü -> ue (German transliteration)
+        self.assertIn("ueber", result["slug"])
+        self.assertIn("cafe", result["slug"])
+
+    def test_multiple_spaces(self):
+        result = generate_slug("  hello   world  ")
+        self.assertEqual(result["slug"], "hello-world")
+
+
+class TestCsvToJson(unittest.TestCase):
+    """Test CSV to JSON conversion service."""
+
+    def test_basic_csv(self):
+        csv = "name,age\nAlice,30\nBob,25"
+        result = csv_to_json(csv)
+        self.assertEqual(result["row_count"], 2)
+        self.assertEqual(result["rows"][0]["name"], "Alice")
+        self.assertEqual(result["rows"][0]["age"], 30)
+
+    def test_custom_delimiter(self):
+        csv = "name;age\nAlice;30"
+        result = csv_to_json(csv, delimiter=";")
+        self.assertEqual(result["rows"][0]["name"], "Alice")
+
+    def test_no_header(self):
+        csv = "Alice,30\nBob,25"
+        result = csv_to_json(csv, has_header=False)
+        self.assertEqual(result["row_count"], 2)
+        self.assertIsInstance(result["rows"][0], list)
+
+    def test_quoted_fields(self):
+        csv = 'name,bio\nAlice,"Hello, World"'
+        result = csv_to_json(csv)
+        self.assertEqual(result["rows"][0]["bio"], "Hello, World")
+
+    def test_numeric_conversion(self):
+        csv = "item,price,qty\nWidget,9.99,5"
+        result = csv_to_json(csv)
+        self.assertEqual(result["rows"][0]["price"], 9.99)
+        self.assertEqual(result["rows"][0]["qty"], 5)
+
+    def test_empty_csv(self):
+        result = csv_to_json("")
+        # Empty string becomes one empty row after split
+        self.assertIn("row_count", result)
+
+
+class TestIpInfo(unittest.TestCase):
+    """Test IP address analysis service."""
+
+    def test_valid_ipv4(self):
+        result = analyze_ip("192.168.1.1")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["version"], 4)
+        self.assertTrue(result["is_private"])
+
+    def test_loopback(self):
+        result = analyze_ip("127.0.0.1")
+        self.assertTrue(result["valid"])
+        self.assertTrue(result["is_loopback"])
+        self.assertEqual(result["type"], "Loopback")
+
+    def test_public_ip(self):
+        result = analyze_ip("8.8.8.8")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["type"], "Public")
+        self.assertEqual(result["class"], "A")
+
+    def test_class_b_private(self):
+        result = analyze_ip("172.16.0.1")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["class"], "B")
+        self.assertTrue(result["is_private"])
+
+    def test_class_c(self):
+        result = analyze_ip("200.100.50.25")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["class"], "C")
+        self.assertEqual(result["type"], "Public")
+
+    def test_multicast(self):
+        result = analyze_ip("224.0.0.1")
+        self.assertTrue(result["valid"])
+        self.assertTrue(result["is_multicast"])
+
+    def test_invalid_ip(self):
+        result = analyze_ip("256.1.1.1")
+        self.assertFalse(result["valid"])
+
+    def test_ipv6_loopback(self):
+        result = analyze_ip("::1")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["version"], 6)
+
+    def test_binary_representation(self):
+        result = analyze_ip("192.168.1.1")
+        self.assertIn("binary", result)
+        self.assertIsNotNone(result["binary"])
+
+    def test_hex_representation(self):
+        result = analyze_ip("10.0.0.1")
+        self.assertIn("hex", result)
+
+
 class TestVersionAndPrices(unittest.TestCase):
     """Test version and pricing configuration."""
 
-    def test_version_is_2(self):
-        """Test that version is updated to 2.0.0."""
-        self.assertEqual(VERSION, "2.0.0")
+    def test_version_is_3(self):
+        """Test that version is updated to 3.0.0."""
+        self.assertEqual(VERSION, "3.0.0")
 
-    def test_twelve_services_in_prices(self):
-        """Test that there are 12 services in PRICES dict."""
-        self.assertEqual(len(PRICES), 12)
+    def test_sixteen_services_in_prices(self):
+        """Test that there are 16 services in PRICES dict."""
+        self.assertEqual(len(PRICES), 16)
 
-    def test_new_services_have_prices(self):
-        """Test that all 4 new services have prices."""
+    def test_v2_services_have_prices(self):
+        """Test that v2 services have prices."""
         self.assertIn("password_generate", PRICES)
         self.assertIn("jwt_decode", PRICES)
         self.assertIn("diff", PRICES)
         self.assertIn("template_render", PRICES)
 
-    def test_new_service_prices(self):
-        """Test that new service prices are correct."""
-        self.assertEqual(PRICES["password_generate"], 0.02)
-        self.assertEqual(PRICES["jwt_decode"], 0.03)
-        self.assertEqual(PRICES["diff"], 0.05)
-        self.assertEqual(PRICES["template_render"], 0.03)
+    def test_v3_services_have_prices(self):
+        """Test that v3 services have prices."""
+        self.assertIn("regex_test", PRICES)
+        self.assertIn("slug", PRICES)
+        self.assertIn("csv_json", PRICES)
+        self.assertIn("ip_info", PRICES)
+
+    def test_v3_service_prices(self):
+        """Test that v3 service prices are correct."""
+        self.assertEqual(PRICES["regex_test"], 0.03)
+        self.assertEqual(PRICES["slug"], 0.01)
+        self.assertEqual(PRICES["csv_json"], 0.03)
+        self.assertEqual(PRICES["ip_info"], 0.02)
 
 
 if __name__ == '__main__':
