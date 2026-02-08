@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-Eve's Utility Services v1.0 - Practical developer utility toolkit.
+Eve's Utility Services v2.0 - Practical developer utility toolkit.
 
 Endpoints:
-  POST /markdown       - Markdown to HTML conversion
-  POST /json_validate  - JSON Schema validation
-  POST /hash           - Cryptographic hash generation (SHA256, SHA512, MD5, HMAC)
-  POST /text_analytics - Readability scores, word frequency, text statistics
-  POST /cron_explain   - Human-readable cron expression explanations
-  POST /color_palette  - Color palette generation from base color
-  POST /uuid_generate  - Bulk UUID generation
-  POST /encode_decode  - Base64 / URL encoding and decoding
-  GET  /health         - Health check
-  GET  /catalog        - Service catalog with pricing
+  POST /markdown          - Markdown to HTML conversion
+  POST /json_validate     - JSON Schema validation
+  POST /hash              - Cryptographic hash generation (SHA256, SHA512, MD5, HMAC)
+  POST /text_analytics    - Readability scores, word frequency, text statistics
+  POST /cron_explain      - Human-readable cron expression explanations
+  POST /color_palette     - Color palette generation from base color
+  POST /uuid_generate     - Bulk UUID generation
+  POST /encode_decode     - Base64 / URL encoding and decoding
+  POST /password_generate - Secure password, API key, passphrase, and PIN generation
+  POST /jwt_decode        - JWT token decoding (header, payload, expiry check)
+  POST /diff              - Unified diff generation with similarity stats
+  POST /template_render   - Mustache/Jinja-like template rendering with filters
+  GET  /health            - Health check
+  GET  /catalog           - Service catalog with pricing
 
 Zero external dependencies. Pure Python 3.10+ stdlib.
 Complementary to Adam's services — no overlap.
@@ -26,11 +30,14 @@ import json
 import math
 import os
 import re
+import secrets
 import statistics
+import string
 import time
 import uuid
 import colorsys
 import base64
+import difflib
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -45,7 +52,7 @@ import threading
 PORT = int(os.environ.get("EVE_SERVICE_PORT", 8081))
 COORDINATOR_URL = os.environ.get("COORDINATOR_URL", "https://singularity.wisent.ai")
 INSTANCE_ID = os.environ.get("AGENT_INSTANCE_ID", "agent_1770509569_5622f0")
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 
 PRICES = {
     "markdown": 0.02,
@@ -56,6 +63,10 @@ PRICES = {
     "color_palette": 0.03,
     "uuid_generate": 0.01,
     "encode_decode": 0.01,
+    "password_generate": 0.02,
+    "jwt_decode": 0.03,
+    "diff": 0.05,
+    "template_render": 0.03,
 }
 
 stats = {
@@ -637,6 +648,639 @@ def encode_decode(text: str, operation: str = "base64_encode") -> dict:
     return result
 
 
+# ─── Service: Password/Secret Generator ──────────────────────────────────────
+
+# Built-in word list for passphrase generation
+_PASSPHRASE_WORDS = [
+    "correct", "horse", "battery", "staple", "abandon", "ability", "above",
+    "absent", "absorb", "abstract", "absurd", "accept", "account", "accuse",
+    "achieve", "acid", "across", "adapt", "address", "adjust", "admit",
+    "advance", "advice", "afford", "agent", "agree", "ahead", "airport",
+    "alarm", "album", "alert", "alien", "almost", "alpha", "alter",
+    "always", "amateur", "anchor", "ancient", "angle", "animal", "ankle",
+    "announce", "annual", "another", "antenna", "antique", "anxiety", "apart",
+    "apology", "appear", "apple", "approve", "arctic", "arena", "armor",
+    "arrow", "artist", "asthma", "athlete", "atom", "auction", "audit",
+    "august", "autumn", "average", "avocado", "avoid", "awake", "aware",
+    "awesome", "awful", "axis", "bamboo", "banana", "banner", "barrel",
+    "basket", "battle", "beach", "beauty", "become", "before", "begin",
+    "believe", "below", "bench", "benefit", "beyond", "bicycle", "blanket",
+    "blind", "blood", "blossom", "board", "bonus", "bottom", "bounce",
+    "brain", "brave", "bread", "bridge", "bring", "broken", "brother",
+    "brown", "brush", "bubble", "bucket", "budget", "buffalo", "build",
+    "bullet", "bundle", "burden", "burger", "butter", "cabin", "cable",
+    "cactus", "cage", "camera", "camp", "canal", "cancel", "candle",
+    "canvas", "canyon", "carbon", "cargo", "carpet", "carry", "castle",
+    "casual", "catalog", "caught", "caution", "ceiling", "celery", "cement",
+    "census", "cereal", "chamber", "change", "chapter", "charge", "cherry",
+    "chicken", "chief", "choice", "chunk", "circle", "citizen", "claim",
+    "classic", "clean", "clever", "cliff", "climb", "clinic", "clock",
+    "cloud", "cluster", "coach", "coconut", "coffee", "collect", "color",
+    "column", "combine", "comfort", "comic", "common", "company", "concert",
+    "confirm", "connect", "consider", "control", "convert", "cookie", "copper",
+    "coral", "corner", "cosmic", "cotton", "couch", "country", "couple",
+    "course", "cousin", "cover", "coyote", "cradle", "craft", "crane",
+    "crash", "crater", "crawl", "crazy", "cream", "credit", "creek",
+    "cricket", "crime", "crisp", "cross", "crowd", "crucial", "cruel",
+    "cruise", "crumble", "crystal", "culture", "cupboard", "curtain", "curve",
+    "cycle", "damage", "dance", "danger", "daring", "dawn", "debate",
+    "decade", "december", "decide", "decline", "decorate", "decrease", "defeat",
+    "defend", "define", "defy", "degree", "delay", "deliver", "demand",
+    "denial", "dentist", "depart", "depend", "deposit", "depth", "deputy",
+    "derive", "describe", "desert", "design", "detail", "detect", "develop",
+    "device", "devote", "diagram", "diamond", "diary", "diesel", "differ",
+    "digital", "dignity", "dilemma", "dinner", "dinosaur", "direct", "dirt",
+    "disagree", "discover", "disease", "dismiss", "display", "distance", "divert",
+    "divide", "doctor", "document", "dolphin", "domain", "donate", "donkey",
+    "double", "dragon", "drama", "drastic", "dream", "drift", "drink",
+    "driver", "drop", "drum", "duck", "dumb", "dune", "during",
+    "dust", "dwarf", "dynamic", "eager", "eagle", "early", "earth",
+    "easily", "echo", "ecology", "economy", "editor", "educate", "effort",
+    "eight", "either", "elbow", "elder", "electric", "elegant", "element",
+    "elephant", "elevator", "elite", "embark", "embrace", "emerge", "emotion",
+    "employ", "empower", "empty", "enable", "enact", "endless", "endorse",
+    "enemy", "energy", "enforce", "engage", "engine", "enhance", "enjoy",
+    "enough", "ensure", "enter", "entire", "entry", "envelope", "episode",
+    "equal", "equip", "erosion", "escape", "essay", "essence", "estate",
+    "eternal", "evening", "evidence", "evolve", "exact", "example", "excess",
+    "exchange", "excite", "exclude", "excuse", "execute", "exercise", "exhaust",
+    "exhibit", "exile", "exist", "expand", "expect", "expire", "explain",
+    "expose", "express", "extend", "extra", "fabric", "faculty", "faith",
+    "family", "famous", "fancy", "fantasy", "fashion", "fatal", "father",
+    "fatigue", "fault", "favorite", "feature", "february", "federal", "fence",
+    "festival", "fetch", "fever", "fiction", "field", "figure", "filter",
+    "final", "finger", "finish", "fire", "fiscal", "fitness", "flag",
+    "flame", "flash", "flavor", "flight", "float", "flood", "floor",
+    "flower", "fluid", "flush", "focus", "follow", "force", "forest",
+    "forget", "fork", "fortune", "forum", "forward", "fossil", "foster",
+    "found", "fragile", "frame", "frequent", "fresh", "friend", "fringe",
+    "frozen", "fruit", "fuel", "funny", "furnace", "fury", "future",
+    "gadget", "galaxy", "gallery", "game", "garage", "garden", "garlic",
+    "garment", "gather", "gauge", "genius", "genre", "gentle", "genuine",
+    "gesture", "ghost", "giant", "gift", "giggle", "ginger", "giraffe",
+    "glance", "glimpse", "globe", "gloom", "glory", "glove", "glow",
+    "goddess", "gospel", "gossip", "govern", "grace", "grain", "grant",
+    "grape", "gravity", "green", "grid", "grief", "grit", "grocery",
+    "group", "grow", "grunt", "guard", "guess", "guide", "guitar",
+    "habit", "hammer", "hamster", "happen", "harbor", "harvest", "hawk",
+    "hazard", "heart", "heavy", "hello", "helmet", "heritage", "hero",
+    "hidden", "highway", "hint", "history", "hobby", "hollow", "honey",
+    "horizon", "horror", "hospital", "hotel", "hover", "humble", "humor",
+    "hundred", "hungry", "hurdle", "hybrid", "icon", "identify", "ignore",
+    "image", "immune", "impact", "impose", "improve", "impulse", "include",
+    "income", "increase", "index", "indicate", "indoor", "industry", "infant",
+    "inflict", "inform", "initial", "inject", "inner", "innocent", "input",
+    "inquiry", "insane", "insect", "inside", "inspire", "install", "intact",
+    "interest", "invest", "invite", "involve", "iron", "island", "isolate",
+    "ivory", "jacket", "jaguar", "jealous", "jelly", "jewel", "journey",
+    "judge", "juice", "jungle", "junior", "junk", "justice", "kangaroo",
+    "kayak", "keen", "kernel", "kidney", "kingdom", "kitchen", "kite",
+    "kitten", "knife", "knock", "label", "ladder", "lamp", "language",
+    "laptop", "large", "later", "Latin", "laugh", "laundry", "layer",
+    "leader", "learn", "leave", "lecture", "legal", "legend", "leisure",
+    "lemon", "length", "lens", "leopard", "lesson", "letter", "level",
+    "liberty", "library", "license", "light", "limit", "link", "liquid",
+    "little", "lively", "lizard", "lobster", "local", "logic", "lonely",
+    "lottery", "louder", "lounge", "loyal", "lucky", "lumber", "lunar",
+    "luxury", "machine", "magazine", "magnet", "mango", "mansion", "maple",
+    "marble", "margin", "marine", "market", "master", "matrix", "maximum",
+    "meadow", "measure", "media", "melody", "member", "memory", "mention",
+    "mercy", "merge", "merit", "method", "middle", "million", "mimic",
+    "mineral", "minimum", "miracle", "mirror", "misery", "mission", "mobile",
+    "model", "modify", "moment", "monitor", "monkey", "monster", "month",
+    "moral", "morning", "motion", "mountain", "mouse", "movie", "much",
+    "muffin", "multiple", "muscle", "museum", "music", "mutual", "myself",
+    "mystery", "narrow", "nation", "nature", "negative", "neglect", "neither",
+    "nephew", "nerve", "network", "neutral", "never", "noble", "nominal",
+    "noodle", "normal", "north", "notable", "nothing", "notice", "novel",
+    "nuclear", "number", "nurse", "object", "oblige", "observe", "obtain",
+    "obvious", "ocean", "october", "offer", "office", "olive", "olympic",
+    "opinion", "oppose", "option", "orange", "orbit", "order", "organ",
+    "orient", "original", "orphan", "ostrich", "outdoor", "output", "outside",
+    "oval", "owner", "oxygen", "oyster", "paddle", "palace", "panda",
+    "panel", "panic", "panther", "paper", "parade", "parent", "park",
+    "parrot", "party", "passion", "patch", "patient", "pattern", "pause",
+    "peanut", "pelican", "penalty", "pencil", "people", "pepper", "perfect",
+    "permit", "person", "phrase", "piano", "picnic", "picture", "piece",
+    "pilot", "pioneer", "pizza", "planet", "plastic", "platform", "player",
+    "please", "pledge", "pluck", "plunge", "poetry", "point", "polar",
+    "policy", "polish", "pond", "popular", "position", "possible", "potato",
+    "pottery", "poverty", "powder", "power", "practice", "predict", "prefer",
+    "prepare", "present", "pretty", "prevent", "primary", "prince", "prison",
+    "private", "problem", "process", "produce", "profit", "program", "project",
+    "promote", "proof", "property", "prosper", "protect", "proud", "provide",
+    "public", "pulse", "pumpkin", "punch", "pupil", "purchase", "purple",
+    "puzzle", "pyramid", "quality", "quantum", "quarter", "question", "quick",
+    "rabbit", "raccoon", "radar", "radio", "rail", "rainbow", "random",
+    "range", "rapid", "rather", "raven", "razor", "ready", "reason",
+    "rebel", "rebuild", "recall", "receive", "recipe", "record", "recycle",
+    "reduce", "reflect", "reform", "refuse", "region", "regret", "regular",
+    "reject", "relax", "release", "relief", "rely", "remain", "remember",
+    "remind", "remove", "render", "renew", "repair", "repeat", "replace",
+    "report", "require", "rescue", "resist", "resource", "response", "result",
+    "retire", "retreat", "return", "reveal", "review", "reward", "rhythm",
+    "ribbon", "rifle", "right", "rigid", "ring", "ripple", "river",
+    "road", "robot", "robust", "rocket", "romance", "rough", "round",
+    "royal", "rubber", "rude", "rural", "saddle", "safety", "salad",
+    "salmon", "salon", "sample", "satisfy", "satoshi", "sauce", "sausage",
+    "scale", "scatter", "scene", "scheme", "school", "science", "scissors",
+    "scorpion", "scout", "screen", "script", "search", "season", "secret",
+    "section", "security", "select", "senior", "sense", "sentence", "series",
+    "service", "session", "settle", "setup", "shadow", "shaft", "shallow",
+    "share", "shelter", "sheriff", "shield", "shift", "shine", "ship",
+    "shock", "shoulder", "shove", "shrimp", "shuttle", "sibling", "siege",
+    "sight", "silent", "silver", "similar", "simple", "since", "siren",
+    "sister", "situate", "sketch", "skill", "slender", "slice", "slogan",
+    "slot", "smart", "smile", "smooth", "snack", "snake", "snap",
+    "social", "soldier", "solution", "someone", "sorry", "source", "south",
+    "space", "spare", "spatial", "spawn", "special", "speed", "sphere",
+    "spider", "spirit", "split", "sponsor", "spoon", "sport", "spray",
+    "spread", "spring", "squirrel", "stable", "stadium", "staff", "stage",
+    "stamp", "stand", "start", "state", "station", "stay", "steak",
+    "steel", "stem", "step", "stereo", "stick", "still", "stock",
+    "stomach", "stone", "stool", "story", "strategy", "street", "strike",
+    "strong", "struggle", "student", "stuff", "stumble", "style", "subject",
+    "submit", "sudden", "suffer", "sugar", "suggest", "summer", "sun",
+    "super", "supply", "supreme", "surface", "surge", "surprise", "surround",
+    "survey", "suspect", "sustain", "swallow", "swamp", "swap", "sweet",
+    "swift", "swim", "switch", "symbol", "symptom", "syrup", "system",
+    "table", "tackle", "talent", "tank", "tape", "target", "task",
+    "tattoo", "taxi", "teach", "team", "tenant", "tennis", "term",
+    "test", "text", "thank", "theme", "theory", "thought", "three",
+    "thrive", "throw", "thumb", "thunder", "ticket", "tiger", "timber",
+    "title", "toast", "tobacco", "today", "toddler", "tomato", "tomorrow",
+    "tongue", "tonight", "topic", "torch", "tornado", "tortoise", "total",
+    "tourist", "toward", "tower", "town", "trade", "traffic", "train",
+    "transfer", "trash", "travel", "tray", "treasure", "tree", "trend",
+    "trial", "tribe", "trick", "trigger", "trim", "trip", "trophy",
+    "trouble", "truck", "truly", "trumpet", "trust", "truth", "tumble",
+    "tunnel", "turkey", "turn", "turtle", "twelve", "twenty", "twice",
+    "type", "typical", "umbrella", "unable", "unaware", "uncle", "under",
+    "unfair", "unfold", "unhappy", "uniform", "unique", "unit", "universe",
+    "unknown", "unlock", "until", "unusual", "unveil", "update", "upgrade",
+    "upper", "upset", "urban", "usage", "useful", "useless", "usual",
+    "utility", "vacant", "vacuum", "valid", "valley", "valve", "vanish",
+    "vapor", "various", "vast", "vault", "vehicle", "velvet", "vendor",
+    "venture", "verb", "verify", "version", "vessel", "veteran", "viable",
+    "vibrant", "victim", "victory", "video", "view", "village", "vintage",
+    "violin", "virtual", "virus", "visa", "visit", "visual", "vital",
+    "vivid", "vocal", "voice", "volcano", "volume", "voyage", "waffle",
+    "wagon", "walnut", "wander", "warfare", "warrior", "wash", "waste",
+    "water", "wealth", "weapon", "weather", "wedding", "weekend", "welcome",
+    "western", "whale", "wheat", "wheel", "whisper", "width", "wild",
+    "window", "winter", "wisdom", "witness", "wolf", "woman", "wonder",
+    "world", "worry", "worth", "wrap", "wreck", "wrestle", "wrist",
+    "write", "wrong", "yellow", "young", "youth", "zebra", "zero", "zone",
+]
+
+
+def _calculate_entropy(length: int, charset_size: int) -> float:
+    """Calculate password entropy in bits."""
+    if charset_size <= 0 or length <= 0:
+        return 0.0
+    return length * math.log2(charset_size)
+
+
+def _strength_rating(entropy: float) -> str:
+    """Rate password strength based on entropy bits."""
+    if entropy >= 128:
+        return "very_strong"
+    elif entropy >= 80:
+        return "strong"
+    elif entropy >= 60:
+        return "moderate"
+    elif entropy >= 40:
+        return "weak"
+    else:
+        return "very_weak"
+
+
+def generate_password(length: int = 16, count: int = 1, secret_type: str = "password") -> dict:
+    """Generate secure passwords, API keys, passphrases, or PINs."""
+    count = min(max(count, 1), 100)
+    results = []
+
+    if secret_type == "password":
+        length = min(max(length, 4), 256)
+        charset = string.ascii_letters + string.digits + string.punctuation
+        charset_size = len(charset)
+
+        for _ in range(count):
+            # Guarantee at least one of each category
+            pw_chars = [
+                secrets.choice(string.ascii_uppercase),
+                secrets.choice(string.ascii_lowercase),
+                secrets.choice(string.digits),
+                secrets.choice(string.punctuation),
+            ]
+            for _ in range(length - 4):
+                pw_chars.append(secrets.choice(charset))
+            # Shuffle to avoid predictable positions
+            shuffled = list(pw_chars)
+            for i in range(len(shuffled) - 1, 0, -1):
+                j = secrets.randbelow(i + 1)
+                shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+            password = ''.join(shuffled)
+            entropy = _calculate_entropy(length, charset_size)
+            results.append({
+                "value": password,
+                "length": length,
+                "entropy_bits": round(entropy, 2),
+                "strength": _strength_rating(entropy),
+            })
+
+    elif secret_type == "api_key":
+        length = min(max(length, 8), 256)
+
+        for _ in range(count):
+            # Generate random bytes and encode as hex
+            random_bytes = secrets.token_bytes(length)
+            hex_key = random_bytes.hex()[:length]
+            b64_key = base64.urlsafe_b64encode(random_bytes).decode('ascii')[:length]
+            prefixed_key = f"sk_live_{secrets.token_hex(length)[:length]}"
+            entropy = _calculate_entropy(length, 16)  # hex charset
+            results.append({
+                "value": prefixed_key,
+                "hex_variant": hex_key,
+                "base64_variant": b64_key,
+                "length": len(prefixed_key),
+                "entropy_bits": round(entropy, 2),
+                "strength": _strength_rating(entropy),
+            })
+
+    elif secret_type == "passphrase":
+        # length here means number of words
+        word_count = min(max(length, 3), 20)
+        word_list = _PASSPHRASE_WORDS
+        charset_size = len(word_list)
+
+        for _ in range(count):
+            words = [secrets.choice(word_list) for _ in range(word_count)]
+            passphrase = "-".join(words)
+            entropy = _calculate_entropy(word_count, charset_size)
+            results.append({
+                "value": passphrase,
+                "word_count": word_count,
+                "entropy_bits": round(entropy, 2),
+                "strength": _strength_rating(entropy),
+            })
+
+    elif secret_type == "pin":
+        length = min(max(length, 4), 32)
+        charset_size = 10
+
+        for _ in range(count):
+            pin = ''.join(str(secrets.randbelow(10)) for _ in range(length))
+            entropy = _calculate_entropy(length, charset_size)
+            results.append({
+                "value": pin,
+                "length": length,
+                "entropy_bits": round(entropy, 2),
+                "strength": _strength_rating(entropy),
+            })
+
+    else:
+        return {"error": f"Unknown type: {secret_type}. Options: password, api_key, passphrase, pin"}
+
+    return {
+        "type": secret_type,
+        "count": len(results),
+        "secrets": results,
+    }
+
+
+# ─── Service: JWT Decoder ────────────────────────────────────────────────────
+
+def _base64url_decode(data: str) -> bytes:
+    """Decode base64url-encoded data with proper padding."""
+    # Add padding if needed
+    padding = 4 - len(data) % 4
+    if padding != 4:
+        data += '=' * padding
+    # Replace URL-safe characters
+    data = data.replace('-', '+').replace('_', '/')
+    return base64.b64decode(data)
+
+
+def decode_jwt(token: str) -> dict:
+    """Decode a JWT token without verification."""
+    parts = token.strip().split('.')
+
+    if len(parts) != 3:
+        return {"error": f"Invalid JWT: expected 3 parts separated by '.', got {len(parts)}"}
+
+    result = {"raw_parts": {"header": parts[0], "payload": parts[1], "signature": parts[2]}}
+
+    # Decode header
+    try:
+        header_bytes = _base64url_decode(parts[0])
+        header = json.loads(header_bytes.decode('utf-8'))
+        result["header"] = header
+    except Exception as e:
+        return {"error": f"Failed to decode JWT header: {e}"}
+
+    # Decode payload
+    try:
+        payload_bytes = _base64url_decode(parts[1])
+        payload = json.loads(payload_bytes.decode('utf-8'))
+        result["payload"] = payload
+    except Exception as e:
+        return {"error": f"Failed to decode JWT payload: {e}"}
+
+    # Check signature presence
+    result["signature_present"] = len(parts[2]) > 0
+
+    # Analyze standard claims
+    claims_analysis = {}
+
+    if "iss" in payload:
+        claims_analysis["issuer"] = payload["iss"]
+    if "sub" in payload:
+        claims_analysis["subject"] = payload["sub"]
+    if "aud" in payload:
+        claims_analysis["audience"] = payload["aud"]
+
+    # Check expiry
+    now = int(time.time())
+    if "exp" in payload:
+        exp = payload["exp"]
+        claims_analysis["expires_at"] = datetime.fromtimestamp(exp).isoformat()
+        claims_analysis["is_expired"] = now > exp
+        if now > exp:
+            claims_analysis["expired_seconds_ago"] = now - exp
+        else:
+            claims_analysis["expires_in_seconds"] = exp - now
+    else:
+        claims_analysis["is_expired"] = None  # No expiry claim
+
+    if "iat" in payload:
+        claims_analysis["issued_at"] = datetime.fromtimestamp(payload["iat"]).isoformat()
+    if "nbf" in payload:
+        claims_analysis["not_before"] = datetime.fromtimestamp(payload["nbf"]).isoformat()
+        claims_analysis["is_active"] = now >= payload["nbf"]
+
+    result["claims_analysis"] = claims_analysis
+    result["algorithm"] = header.get("alg", "unknown")
+    result["token_type"] = header.get("typ", "unknown")
+
+    return result
+
+
+# ─── Service: Diff/Patch Tool ────────────────────────────────────────────────
+
+def generate_diff(text_a: str, text_b: str, context_lines: int = 3) -> dict:
+    """Generate unified diff between two texts with statistics."""
+    context_lines = min(max(context_lines, 0), 50)
+
+    lines_a = text_a.splitlines(keepends=True)
+    lines_b = text_b.splitlines(keepends=True)
+
+    # Generate unified diff
+    diff_lines = list(difflib.unified_diff(
+        lines_a, lines_b,
+        fromfile="text_a",
+        tofile="text_b",
+        n=context_lines,
+    ))
+
+    unified_diff = ''.join(diff_lines)
+
+    # Calculate statistics
+    additions = 0
+    deletions = 0
+    for line in diff_lines:
+        if line.startswith('+') and not line.startswith('+++'):
+            additions += 1
+        elif line.startswith('-') and not line.startswith('---'):
+            deletions += 1
+
+    changes = min(additions, deletions)
+
+    # Calculate similarity ratio
+    matcher = difflib.SequenceMatcher(None, text_a, text_b)
+    similarity = matcher.ratio()
+
+    # Also provide a line-level comparison
+    line_matcher = difflib.SequenceMatcher(None, lines_a, lines_b)
+    line_similarity = line_matcher.ratio()
+
+    return {
+        "unified_diff": unified_diff,
+        "stats": {
+            "additions": additions,
+            "deletions": deletions,
+            "changes": changes,
+            "total_lines_a": len(lines_a),
+            "total_lines_b": len(lines_b),
+        },
+        "similarity": {
+            "character_ratio": round(similarity, 4),
+            "line_ratio": round(line_similarity, 4),
+            "percentage": f"{similarity * 100:.1f}%",
+        },
+        "has_differences": len(diff_lines) > 0,
+        "context_lines": context_lines,
+    }
+
+
+# ─── Service: Template Engine ────────────────────────────────────────────────
+
+def _apply_filter(value: str, filter_name: str) -> str:
+    """Apply a template filter to a value."""
+    if filter_name == "upper":
+        return value.upper()
+    elif filter_name == "lower":
+        return value.lower()
+    elif filter_name == "title":
+        return value.title()
+    elif filter_name == "strip":
+        return value.strip()
+    elif filter_name == "capitalize":
+        return value.capitalize()
+    elif filter_name == "length":
+        return str(len(value))
+    elif filter_name.startswith("default:"):
+        # {{value|default:"N/A"}} — value is already resolved; this is handled at lookup
+        return value
+    return value
+
+
+def _resolve_variable(name: str, variables: dict) -> str:
+    """Resolve a variable name (supports dot notation) and apply filters."""
+    # Split off filters
+    parts = name.split('|')
+    var_name = parts[0].strip()
+    filters = [f.strip() for f in parts[1:]]
+
+    # Check for default filter first (needed if variable is missing)
+    default_value = None
+    for f in filters:
+        if f.startswith("default:"):
+            default_raw = f[len("default:"):]
+            # Strip surrounding quotes if present
+            if (default_raw.startswith('"') and default_raw.endswith('"')) or \
+               (default_raw.startswith("'") and default_raw.endswith("'")):
+                default_value = default_raw[1:-1]
+            else:
+                default_value = default_raw
+
+    # Resolve variable with dot notation
+    current = variables
+    for key in var_name.split('.'):
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            # Variable not found
+            if default_value is not None:
+                return default_value
+            return ""
+
+    value = str(current)
+
+    # Apply filters (except default, which was already handled)
+    for f in filters:
+        if not f.startswith("default:"):
+            value = _apply_filter(value, f)
+
+    return value
+
+
+def _evaluate_condition(condition_name: str, variables: dict) -> Any:
+    """Evaluate a condition for if/unless blocks."""
+    name = condition_name.strip()
+    negate = False
+    if name.startswith("not "):
+        negate = True
+        name = name[4:].strip()
+
+    # Resolve variable
+    current = variables
+    for key in name.split('.'):
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            current = None
+            break
+
+    result = bool(current)
+    if negate:
+        result = not result
+    return result, current
+
+
+def _resolve_each(items_name: str, variables: dict):
+    """Resolve items for each blocks."""
+    current = variables
+    for key in items_name.strip().split('.'):
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            return []
+    if isinstance(current, list):
+        return current
+    return []
+
+
+def render_template(template: str, variables: dict) -> dict:
+    """Render a template with Mustache/Jinja-like syntax."""
+    output = template
+    errors = []
+
+    # Process {{#each items}}...{{/each}} blocks (innermost first to handle nesting)
+    max_iterations = 50  # Safety guard against infinite loops
+    iteration = 0
+    each_pattern = re.compile(r'\{\{#each\s+(\w[\w.]*)\}\}(.*?)\{\{/each\}\}', re.DOTALL)
+    while each_pattern.search(output) and iteration < max_iterations:
+        iteration += 1
+        match = each_pattern.search(output)
+        items_name = match.group(1)
+        body = match.group(2)
+        items = _resolve_each(items_name, variables)
+
+        rendered_items = []
+        for i, item in enumerate(items):
+            item_output = body
+            if isinstance(item, dict):
+                # Replace {{key}} references within the loop body with item values
+                def replace_item_var(m, _item=item):
+                    var_expr = m.group(1).strip()
+                    parts = var_expr.split('|')
+                    key = parts[0].strip()
+                    filters = [f.strip() for f in parts[1:]]
+
+                    if key == "@index":
+                        val = str(i)
+                    elif key == "@first":
+                        val = str(i == 0)
+                    elif key == "@last":
+                        val = str(i == len(items) - 1)
+                    elif key in _item:
+                        val = str(_item[key])
+                    else:
+                        # Fall back to outer variables
+                        val = _resolve_variable(var_expr, variables)
+                        return val
+
+                    for f in filters:
+                        if not f.startswith("default:"):
+                            val = _apply_filter(val, f)
+                    return val
+
+                item_output = re.sub(r'\{\{([^#/}][^}]*?)\}\}', replace_item_var, item_output)
+            else:
+                # Scalar item — replace {{.}} or {{this}} with the value
+                item_output = item_output.replace('{{.}}', str(item))
+                item_output = item_output.replace('{{this}}', str(item))
+
+            rendered_items.append(item_output)
+
+        output = output[:match.start()] + ''.join(rendered_items) + output[match.end():]
+
+    # Process {{#if condition}}...{{/if}} blocks
+    iteration = 0
+    if_pattern = re.compile(r'\{\{#if\s+(.+?)\}\}(.*?)\{\{/if\}\}', re.DOTALL)
+    while if_pattern.search(output) and iteration < max_iterations:
+        iteration += 1
+        match = if_pattern.search(output)
+        condition_name = match.group(1)
+        body = match.group(2)
+
+        truthy, _ = _evaluate_condition(condition_name, variables)
+        if truthy:
+            output = output[:match.start()] + body + output[match.end():]
+        else:
+            output = output[:match.start()] + output[match.end():]
+
+    # Process {{#unless condition}}...{{/unless}} blocks
+    iteration = 0
+    unless_pattern = re.compile(r'\{\{#unless\s+(.+?)\}\}(.*?)\{\{/unless\}\}', re.DOTALL)
+    while unless_pattern.search(output) and iteration < max_iterations:
+        iteration += 1
+        match = unless_pattern.search(output)
+        condition_name = match.group(1)
+        body = match.group(2)
+
+        truthy, _ = _evaluate_condition(condition_name, variables)
+        if not truthy:
+            output = output[:match.start()] + body + output[match.end():]
+        else:
+            output = output[:match.start()] + output[match.end():]
+
+    # Process remaining {{variable}} and {{variable|filter}} expressions
+    def replace_var(match):
+        expr = match.group(1).strip()
+        return _resolve_variable(expr, variables)
+
+    output = re.sub(r'\{\{([^#/}][^}]*?)\}\}', replace_var, output)
+
+    return {
+        "rendered": output,
+        "template_length": len(template),
+        "output_length": len(output),
+        "variables_provided": list(variables.keys()),
+    }
+
+
 # ─── HTTP Handler ─────────────────────────────────────────────────────────────
 
 class EveServiceHandler(BaseHTTPRequestHandler):
@@ -781,6 +1425,33 @@ class EveServiceHandler(BaseHTTPRequestHandler):
                 return {"error": "Missing 'text' field"}
             operation = data.get("operation", "base64_encode")
             return encode_decode(text, operation)
+
+        elif service == "password_generate":
+            length = data.get("length", 16)
+            count = data.get("count", 1)
+            secret_type = data.get("type", "password")
+            return generate_password(length, count, secret_type)
+
+        elif service == "jwt_decode":
+            token = data.get("token", "")
+            if not token:
+                return {"error": "Missing 'token' field"}
+            return decode_jwt(token)
+
+        elif service == "diff":
+            text_a = data.get("text_a", "")
+            text_b = data.get("text_b", "")
+            if text_a is None and text_b is None:
+                return {"error": "Missing 'text_a' and/or 'text_b' fields"}
+            context_lines = data.get("context_lines", 3)
+            return generate_diff(text_a, text_b, context_lines)
+
+        elif service == "template_render":
+            template = data.get("template", "")
+            if not template:
+                return {"error": "Missing 'template' field"}
+            variables = data.get("variables", {})
+            return render_template(template, variables)
 
         return {"error": f"Service {service} not implemented"}
 
